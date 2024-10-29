@@ -1,0 +1,300 @@
+import random
+import torch
+import numpy as np
+
+
+class Player:
+    def __init__(self, stack_size,pnum):
+        self.pnum = pnum
+        self.card_1 = None
+        self.card_2 = None
+        self.stack_size = stack_size
+        self.starting_stack_size = stack_size
+        self.last_win = 0
+        self.expected_ev = 0
+        self.was_last_raiser = 0
+
+    def set_cards_none(self):
+        self.card_1 = None
+        self.card_2 = None
+
+class HeadsUpPokerGame:
+
+    def __init__(self, blinds, init_stack):
+        self.use_cuda = torch.cuda.is_available()
+        self.num_players = 2
+        self.deck = None
+        self.action_finished = False
+        self.pot_size = 0
+        self.blinds = blinds
+        self.p1 = Player(init_stack,0)
+        self.p2 = Player(init_stack,1)
+        self.sb_player = 0
+        self.action_player = 0
+        self.phase = "pre-flop"
+        self.started_new_phase = True
+        self.all_in = False
+        self.to_call = 0
+        self.game_over = 0
+        self.game_num = 0
+
+        self.val_dict =    {
+                                0: "Q",
+                                1: "K",
+                                2: "A",
+                            }
+
+        self.suits_dict =   {
+                                0: "c",
+                            }
+
+        self.priority_dict =    {
+                                    "HC": 0
+                                }
+        self.all_cards()
+        self.do_blinds()
+        self.deal_cards()
+
+    def set_game(self, deck, action_finished, pot_size, blinds, p1, p2, sb_player, action_player, phase,started_new_phase,all_in,to_call,game_over,game_num):
+        self.use_cuda = torch.cuda.is_available()
+        self.num_players = 2
+        self.deck = deck
+        self.action_finished = action_finished
+        self.pot_size = pot_size
+        self.blinds = blinds
+        self.p1 = p1
+        self.p2 = p2
+        self.sb_player = sb_player
+        self.phase = phase
+        self.started_new_phase = started_new_phase
+        self.all_in = all_in
+        self.to_call = to_call
+        self.game_over = game_over
+        self.game_num = game_num
+
+    def reset_game(self, blinds, init_stack):
+        self.num_players = 2
+        self.game_over = 0
+        self.deck = None
+        self.action_finished = False
+        self.pot_size = 0
+        self.blinds = blinds
+        self.p1 = Player(init_stack, 0)
+        self.p2 = Player(init_stack, 1)
+        self.sb_player = 0
+        self.action_player = 0
+        self.phase = "pre-flop"
+        self.started_new_phase = True
+        self.all_in = False
+        self.all_cards()
+        self.do_blinds()
+        self.deal_cards()
+
+    def do_blinds(self):
+
+        self.p1.starting_stack_size = self.p1.stack_size
+        self.p2.starting_stack_size = self.p2.stack_size
+        if self.sb_player == 0:
+            self.p1.stack_size -= min(self.blinds[1], self.p1.stack_size)
+            self.p2.stack_size -= min(self.blinds[0], self.p2.stack_size)
+        else:
+            self.p2.stack_size -= min(self.blinds[1], self.p2.stack_size)
+            self.p1.stack_size -= min(self.blinds[0], self.p2.stack_size)
+        self.pot_size += self.blinds[0] + self.blinds[1]
+        self.to_call = self.blinds[0] - self.blinds[1]
+        if self.p1.stack_size <= 0 or self.p2.stack_size <= 0:
+            self.game_over = 1
+
+    def all_cards(self):
+        deck = []
+        for i in range(3):
+            for j in range(1):
+                deck.append((i, j))
+        self.deck = deck
+
+    def winner(self):
+        winner = self.determine_winner()
+        if winner == "tie":
+            self.p1.stack_size += self.pot_size / 2
+            self.p2.stack_size += self.pot_size / 2
+        elif winner == "p1":
+            self.p1.stack_size += self.pot_size
+        elif winner == "p2":
+            self.p2.stack_size += self.pot_size
+        self.pot_size = 0
+
+
+
+    def deal_cards(self):
+        random.shuffle(self.deck)
+        if self.sb_player == 0:
+            self.p1.card_1 = self.deck.pop(0)
+            self.p2.card_1 = self.deck.pop(0)
+        else:
+            self.p2.card_1 = self.deck.pop(0)
+            self.p1.card_1 = self.deck.pop(0)
+
+    def next_card(self):
+        if self.phase == "pre-flop":
+            self.started_new_phase = True
+            self.phase = "showdown"
+        else:
+            self.started_new_phase = True
+            self.phase = "showdown"
+
+    def ch_call(self):
+        acting_p = self.p1 if self.action_player == 0 else self.p2
+        inacting_p = self.p2 if self.action_player == 0 else self.p1
+        if self.to_call == 0:  # Check
+            self.to_call = 0
+            if not self.started_new_phase and self.phase != "showdown":
+                self.next_card()
+            elif self.phase == "showdown":
+                self.winner()
+
+        else:  # Call
+            if acting_p.stack_size >= self.to_call:
+                if self.to_call > acting_p.stack_size:
+                    self.to_call = acting_p.stack_size
+                acting_p.stack_size -= self.to_call
+
+                self.pot_size += self.to_call
+                self.to_call = 0
+                if (inacting_p.stack_size <= 0) and self.phase != "showdown":
+                    while self.phase != "showdown":
+                        self.next_card()
+                    self.winner()
+                    return
+            else:  # All in
+                self.pot_size += acting_p.stack_size
+                acting_p.stack_size = 0
+                while self.phase != "showdown":
+                    self.next_card()
+                self.winner()
+                return
+            if (not self.started_new_phase) and self.phase != "showdown":
+                self.next_card()
+                return
+            elif (not self.started_new_phase):
+                self.winner()
+                return
+
+    def raise_amnt(self, bet_size):
+        acting_p = self.p1 if self.action_player == 0 else self.p2
+        inacting_p = self.p2 if self.action_player == 0 else self.p1
+        bet_size = 1
+
+        acting_p.stack_size -= bet_size
+        self.pot_size += bet_size
+        self.to_call = bet_size - self.to_call
+
+
+    def fold(self):
+        if self.action_player == 0:
+            winner = "p2"
+        else:
+            winner = "p1"
+
+        if winner == "p1":
+            self.p1.stack_size += self.pot_size
+        elif winner == "p2":
+            self.p2.stack_size += self.pot_size
+        self.pot_size = 0
+
+
+    def set_action(self):
+        # Only to be called at the start of a phase
+        if self.phase == "pre-flop":
+            self.action_player = self.sb_player
+        else:
+            self.action_player = 1 - self.sb_player
+
+    def take_action(self, action, bet_size):
+        self.started_new_phase = False
+        if isinstance(bet_size, torch.Tensor):
+            bet_size = bet_size[0]
+
+        self.p1.last_win = 0
+        self.p2.last_win = 0
+
+        try:
+
+            if not (action == 0):
+
+
+
+                acting_p = self.p1 if self.action_player == 0 else self.p2
+                inacting_p = self.p2 if self.action_player == 0 else self.p1
+
+                if action > 1 and inacting_p.stack_size <= 0:
+                    action = 1
+            
+
+                if acting_p.stack_size < 0:
+                    inacting_p.stack_size += acting_p.stack_size
+                    acting_p.stack_size = 0
+                if inacting_p.stack_size < 0:
+                    acting_p.stack_size += inacting_p.stack_size
+                    inacting_p.stack_size = 0
+
+                # If all in continue to next step. Doesn't matter who it is
+                if (acting_p.stack_size <= 0):
+                    while self.phase != "showdown":
+                        self.next_card()
+                    self.winner()
+                    return
+                elif inacting_p.stack_size <= 0 and self.to_call <= 0:
+                    while self.phase != "showdown":
+                        self.next_card()
+                    self.winner()
+                    return
+
+                elif action == 1:
+                    self.ch_call()
+                elif action == 2:
+                    self.raise_amnt(bet_size)
+                if not self.started_new_phase:
+                    self.action_player = 1 - self.action_player
+                else:
+                    self.set_action()
+
+            else:
+                self.fold()
+        except Exception as e:
+            print("Error occured")
+
+    # Applies to most varients of poker (THM, CP, Stud, ...)
+    staticmethod
+    def best_hand(self, hand):
+        return ["HC"]
+
+
+    def determine_winner(self):
+        player1_hand = []
+        player1_hand.append(self.p1.card_1)
+
+        player2_hand = []
+        player2_hand.append(self.p2.card_1)
+
+        p1_best = self.best_hand(player1_hand)
+        p2_best = self.best_hand(player2_hand)
+
+        for i in range(len(p1_best)):
+            p1_check = p1_best[i]
+            p2_check = p2_best[i]
+
+            if isinstance(p1_check,str):
+                p1_check = (self.priority_dict[p1_check], 0)
+                p2_check = (self.priority_dict[p2_check], 0)
+            if p1_check > p2_check:
+                return "p1"
+            if p1_check < p2_check:
+                return"p2"
+        return "tie"
+
+    def print_runnout(self):
+        print(f"P1 hand: {self.val_dict[self.p1.card_1[0]]}{self.suits_dict[self.p1.card_1[1]]} {self.val_dict[self.p1.card_2[0]]}{self.suits_dict[self.p1.card_2[1]]}")
+        print(f"P2 hand: {self.val_dict[self.p2.card_1[0]]}{self.suits_dict[self.p2.card_1[1]]} {self.val_dict[self.p2.card_2[0]]}{self.suits_dict[self.p2.card_2[1]]}")
+        print(f"Board: {self.val_dict[self.board[0][0]]}{self.suits_dict[self.board[0][1]]} {self.val_dict[self.board[1][0]]}{self.suits_dict[self.board[1][1]]} "
+              f"{self.val_dict[self.board[2][0]]}{self.suits_dict[self.board[2][1]]} {self.val_dict[self.board[3][0]]}{self.suits_dict[self.board[3][1]]} "
+              f"{self.val_dict[self.board[4][0]]}{self.suits_dict[self.board[4][1]]}")
